@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="screenshots/image.png" alt="RBL-themed application screenshot" width="300">
+  <img src="RBL-Card-Limit-Increase-Investigation/screenshots/image.png" alt="RBL-themed application screenshot" width="300">
 </p>
 
 > **Investigation notice:** This repository documents a security investigation of an Android APK labelled **RBL CARD LIMIT INCREASE**. The investigation does not establish any affiliation between the application, its operators, or RBL Bank. The RBL branding is described only as observed application and webpage content.
