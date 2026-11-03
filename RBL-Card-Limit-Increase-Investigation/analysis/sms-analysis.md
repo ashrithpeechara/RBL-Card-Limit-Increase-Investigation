@@ -1,90 +1,105 @@
-# SMS Analysis — RBL Card Limit Increase Android Application
+# SMS Functionality Analysis
 
-## 1. Objective
+## 1. Executive Summary
 
-This analysis examines SMS-related functionality identified in the recovered application payload through DEX disassembly and static code inspection.
+The application presenting itself as **RBL Card Limit Increase** contains multiple SMS-related components that implement incoming SMS monitoring, outgoing SMS transmission, message processing, device identification, and Firebase-based data upload functionality.
 
-The investigation focuses on:
+Static analysis identified:
 
-- Outgoing SMS transmission.
-- Incoming SMS reception and processing.
-- SMS database observation.
-- Collection and remote upload of SMS metadata and content.
-- SMS forwarding configuration and remote control.
-- USSD-related functionality.
+- Incoming SMS reception through broadcast receivers.
+- SMS database monitoring using a `ContentObserver`.
+- Keyword-based message filtering.
+- Incoming and outgoing SMS upload routines.
+- Outgoing SMS transmission, including multipart messages.
+- SIM-specific SMS manager selection.
+- SMS transmission status monitoring.
+- A separate service responsible for configuring a forwarding number through Firebase Realtime Database.
 
-The findings are based on static evidence. No claim of successful runtime execution or message delivery is made.
+The application demonstrates substantial access to SMS functionality and remote communication capabilities.
 
-## 2. Evidence Sources
+**Important limitation:** The callback associated with the dynamically registered receiver could not be reconstructed because of DEX decoding errors. Consequently, actual forwarding of received SMS messages to the configured forwarding number remains unverified.
 
-| Evidence file | Purpose |
+This assessment is based on static code analysis. It does not establish that the identified functionality was executed successfully on a device.
+
+---
+
+## 2. Investigation Scope
+
+The investigation focused on identifying SMS-related capabilities, tracing relevant application components, and determining how message data is processed and transmitted.
+
+### Objectives
+
+1. Identify incoming SMS reception mechanisms.
+2. Identify outgoing SMS transmission functionality.
+3. Examine message collection and filtering logic.
+4. Trace SMS-related Firebase upload operations.
+5. Examine SIM selection and multipart SMS handling.
+6. Investigate remote forwarding-number configuration.
+7. Determine whether incoming messages are actually forwarded to a configured destination.
+
+### Evidence examined
+
+| Evidence | Description |
 |---|---|
-| `targeted_sms_worker.txt` | SMS transmission and SIM selection implementation |
-| `priority_methods_full.txt` | SMS listener, receiver and forwarding service implementation |
-| `inner_permissions.txt` | Recovered payload permission references |
-| `inner_badging.txt` | Application package metadata |
+| `targeted_sms_worker.txt` | Targeted SMS-related DEX analysis |
+| `priority_methods_full.txt` | Extracted priority methods and application logic |
+| `inner_jadx/sources/` | JADX-generated Java source output |
+| `inner_smali/` | Baksmali output |
+| `worker_smali/` | Additional Baksmali output |
+| `inner_apk/classes.dex` | Recovered DEX file |
 
-Relevant implementation classes:
+### DEX identity
 
-- `Lcom/nxtwave/berlinenxt/SmsListenerService;`
-- `Lcom/nxtwave/berlinenxt/SmsNForward;`
-- `Lcom/nxtwave/berlinenxt/SmsReceiver;`
-- `Lcom/nxtwave/berlinenxt/SmsSendManager;`
-- `Lcom/nxtwave/berlinenxt/SmsSentReceiver;`
+| Property | Value |
+|---|---|
+| File | `classes.dex` |
+| Format | Dalvik Executable |
+| DEX version | 037 |
+| Size | 4,386,144 bytes |
+| SHA-256 | `194a87a57ea06786ce036858934f3f7ae53d91c0f2a3e2a715aa9f0979e3c073` |
 
-These classes belong to the `com.nxtwave.berlinenxt` implementation namespace. This is distinct from the recovered APK package identity, `com.rblcard_jagtd`.
+---
 
 ## 3. Outgoing SMS Transmission
 
-### 3.1 Permission verification
+### 3.1 Identified component
 
-The SMS sending implementation explicitly checks:
+`i2.s` — `run()V`
 
-```java
-android.permission.SEND_SMS
-```
+Static inspection of this method identified an outgoing SMS transmission routine.
 
-The disassembly shows a permission check before obtaining an `SmsManager` instance.
+The method retrieves relevant values from its instance fields, including:
 
-If permission is unavailable, the code records:
+- Destination telephone number.
+- SIM selection index.
+- Message content.
+- Associated command or metadata fields.
 
-```text
-SEND_SMS permission not granted
-```
+The implementation checks whether the application has the `SEND_SMS` permission before attempting transmission.
 
-This establishes an explicit permission-dependent SMS transmission path.
+### 3.2 Transmission logic
 
-### 3.2 SIM selection
+The identified implementation uses Android's `SmsManager` API.
 
-The method:
+Two transmission paths were identified:
 
-```text
-w(I)Landroid/telephony/SmsManager;
-```
+**Single-part SMS**
 
-uses Android's `SubscriptionManager` to retrieve active subscription information.
-
-It then obtains an SMS manager using:
+For messages up to 160 characters, the application invokes:
 
 ```java
-SmsManager.getSmsManagerForSubscriptionId(subscriptionId);
+smsManager.sendTextMessage(
+    destination,
+    null,
+    message,
+    sentIntent,
+    deliveryIntent
+);
 ```
 
-A fallback to:
+**Multipart SMS**
 
-```java
-SmsManager.getDefault();
-```
-
-is also present.
-
-This indicates support for selecting an SMS subscription, with a fallback to the default SMS manager.
-
-### 3.3 Single-part and multipart messages
-
-The implementation checks message length against 160 characters.
-
-For longer messages, it uses:
+For longer messages, the application invokes:
 
 ```java
 ArrayList<String> parts =
@@ -95,445 +110,440 @@ smsManager.sendMultipartTextMessage(
     null,
     parts,
     sentIntents,
-    null
+    deliveryIntents
 );
 ```
 
-For shorter messages, it uses:
+The application also constructs `PendingIntent` objects for SMS transmission callbacks.
 
-```java
-smsManager.sendTextMessage(
-    destination,
-    null,
-    message,
-    sentIntent,
-    null
-);
-```
+### 3.3 SIM selection
 
-The actual implementation is represented by DEX instructions rather than the illustrative Java reconstruction above.
+The helper method:
 
-### 3.4 Transmission observations
+`y0.e.w(I)`
 
-The implementation contains logging strings including:
+was identified as responsible for obtaining an appropriate `SmsManager`.
 
-```text
-Sending SMS to:
-SMS sent successfully
-Multipart SMS sent
-Failed to get SmsManager for SIM
-Error sending SMS
-```
+The implementation references:
 
-**Assessment:** Outgoing SMS transmission is directly established at the code level. Successful carrier delivery, recipient receipt and runtime execution remain unverified.
+- `SubscriptionManager`
+- `getActiveSubscriptionInfoList()`
+- Subscription identifiers
+- `SmsManager.getSmsManagerForSubscriptionId()`
+- `SmsManager.getDefault()` as a fallback
+
+This indicates support for selecting an active SIM subscription when sending SMS messages.
+
+### 3.4 Assessment
+
+<badge color="success">Confirmed through static analysis</badge>
+
+The application contains functionality capable of initiating outgoing SMS transmissions.
+
+However, the presence of these API calls does not establish successful carrier delivery or recipient receipt.
+
+---
 
 ## 4. Incoming SMS Reception
 
-### 4.1 Broadcast handling
+### 4.1 Identified component
 
-The `SmsReceiver` class contains an `onReceive()` method that checks for:
+`SmsReceiver`
 
-```java
-android.provider.Telephony.SMS_RECEIVED
-```
+The recovered source identifies an incoming SMS broadcast receiver.
 
-It then retrieves the broadcast extras and accesses:
+Its reconstructed method contains a JADX decoding error, so the complete receiver implementation was not available.
 
-```java
-pdus
-```
+Nevertheless, the previously extracted method evidence identifies handling of the `SMS_RECEIVED` broadcast, PDU-related extras, sender information, and initiation of `SmsListenerService`.
 
-The PDU array is processed to obtain incoming message information.
+### 4.2 Processing service
 
-The disassembly also contains the log string:
+`SmsListenerService`
 
-```text
-SMS Received from:
-```
+The service is associated with incoming and outgoing SMS processing.
 
-### 4.2 Service handoff
+The extracted implementation identifies the following operations:
 
-The receiver constructs an intent targeting:
+- Starting a single-thread executor.
+- Creating a `HandlerThread` named `SmsProcessor`.
+- Creating a `Handler`.
+- Acquiring a wake lock with a 600,000 ms timeout.
+- Registering a `ContentObserver` against `Telephony.Sms.CONTENT_URI`.
+- Starting a foreground service.
+- Unregistering the observer and releasing resources during destruction.
 
-```text
-SmsListenerService
-```
+The service also uses `Settings.Secure.getString()` to retrieve the Android ID.
 
-It supplies message-related information, including:
+A fallback identifier of the form `unknown_<timestamp>` is used when the device identifier is unavailable.
 
-```text
-type = incoming
-sender = ...
-```
+### 4.3 Keyword filtering
 
-This demonstrates a code path that hands incoming SMS information to a dedicated service for further processing.
-
-### 4.3 Incoming SMS processing
-
-The listener service contains message classification logic.
-
-Its static initialization builds a keyword set containing terms such as:
+The extracted implementation contains the following keywords:
 
 - `otp`
 - `credited`
 - `spent`
 - `purchased`
 
-The service also contains a method that converts message text to lowercase and checks it against the keyword set.
+The message-processing logic normalizes message text to lowercase before checking for these terms.
 
-**Assessment:** Incoming SMS reception, extraction and keyword-based classification are directly supported by the disassembly.
+The service also stores processed SMS identifiers in SharedPreferences under:
 
-The presence of these keywords alone does not establish the exact business purpose of the classification logic.
+`processed_sms_ids`
 
-## 5. SMS Database Monitoring
+The collection is subject to a size-management mechanism when it grows beyond approximately 2,000 entries.
 
-The `SmsListenerService.onCreate()` method contains the following Android API references:
+### 4.4 Assessment
 
-```java
-ContentResolver resolver = getContentResolver();
+<badge color="success">Confirmed through static analysis</badge>
 
-Uri smsUri = Telephony.Sms.CONTENT_URI;
+The application contains incoming SMS processing and keyword-based filtering functionality.
 
-resolver.registerContentObserver(
-    smsUri,
-    true,
-    smsObserver
-);
-```
+The identified keywords are consistent with monitoring messages associated with authentication and financial transactions. This is a behavioural observation, not proof of a specific criminal purpose.
 
-This is a conceptual reconstruction of the observed instructions.
+---
 
-The service registers a `ContentObserver` against the SMS content URI.
+## 5. SMS Data Collection and Firebase Upload
 
-The corresponding cleanup logic in `onDestroy()` unregisters the observer.
+### 5.1 Incoming SMS upload
 
-This indicates that the application has a mechanism to monitor changes to the device's SMS content provider.
+The extracted incoming-message upload routine constructs message-related fields including:
 
-The observed code also initializes:
-
-- A background executor.
-- A `HandlerThread` named `SmsProcessor`.
-- A `Handler`.
-- A timed `WakeLock`.
-
-These components provide background processing infrastructure.
-
-**Assessment:** SMS content-provider observation is directly established. The exact range of messages accessible to the application depends on Android permissions, platform restrictions and runtime conditions.
-
-## 6. SMS Data Collection and Remote Upload
-
-This is one of the most significant findings.
-
-### 6.1 Incoming SMS upload
-
-The listener service constructs a data object containing fields including:
-
-| Field | Observed purpose |
+| Field | Description |
 |---|---|
-| `timestamp_ms` | Message timestamp |
+| `timestamp_ms` | Message timestamp in milliseconds |
 | `device_id` | Device identifier |
-| `indian_time` | Formatted time |
-| `received_at` | Processing or receipt timestamp |
+| `indian_time` | Time-related metadata |
+| `received_at` | Incoming message receipt metadata |
 
-The implementation then accesses a Firebase-style database reference:
+The routine constructs a Firebase-style database path:
 
 ```text
 users/{device_id}/all_sms/{message_key}
 ```
 
-The disassembly contains references to:
-
-```java
-databaseReference.child("users")
-    .child(deviceId)
-    .child("all_sms")
-    .child(messageKey);
-```
-
-The actual application uses obfuscated and library-specific method calls; this is a conceptual representation.
-
-An asynchronous task is created, with a failure listener attached.
-
-The method also contains the error string:
+A task failure listener is also present, with an associated error log:
 
 ```text
 Error in uploadIncomingSms
 ```
 
-### 6.2 Outgoing SMS upload
+### 5.2 Outgoing SMS upload
 
-A separate method constructs an outgoing SMS record.
+A separate outgoing-message upload routine constructs fields including:
 
-Observed fields include:
-
-| Field | Observed purpose |
+| Field | Description |
 |---|---|
 | `timestamp_ms` | Message timestamp |
 | `device_id` | Device identifier |
-| `indian_time` | Formatted time |
-| `sent_at` | Processing or send timestamp |
+| `indian_time` | Time-related metadata |
+| `sent_at` | Outgoing message metadata |
 | `message_id` | Message identifier |
-| `message_type` | Classified message type |
+| `message_type` | Message classification |
 
-It accesses the same database path structure:
+The routine references the same general Firebase database structure:
 
 ```text
 users/{device_id}/all_sms/{message_key}
 ```
 
-The implementation contains the error string:
+The existence of these routines establishes an application-level SMS upload pathway. Successful remote storage was not independently verified.
 
-```text
-Error in uploadOutgoingSms
-```
+### 5.3 Assessment
 
-### 6.3 Device identification
+<badge color="success">Upload routines identified</badge>
 
-During service initialization, the code retrieves:
+The application contains separate processing paths for incoming and outgoing SMS data, with Firebase-style database references.
 
-```java
-Settings.Secure.getString(
-    getContentResolver(),
-    "android_id"
-);
-```
-
-The resulting value is stored in the service's device identifier field and used when constructing the database path.
-
-If the value is unavailable or empty, fallback identifier logic is present.
-
-**Assessment:** The code contains separate incoming and outgoing SMS data-upload routines using a device-specific Firebase-style database path. The data structures and upload calls are directly observed.
-
-Successful remote upload, backend ownership, access permissions and actual collection of a victim's messages have not been independently verified.
-
-## 7. SMS Forwarding Service
-
-### 7.1 Service initialization
-
-The application contains:
-
-```text
-SmsNForward
-```
-
-The service initializes:
-
-- A background `HandlerThread`.
-- A `Handler`.
-- Shared preferences named `SmsForwardPrefs`.
-- A Firebase database reference.
-
-### 7.2 Forwarding number configuration
-
-The service reads a preference named:
-
-```text
-forward_number
-```
-
-It stores the configured value in an internal field and maintains a Boolean forwarding-enabled state.
-
-The disassembly contains the log message:
-
-```text
-Loaded saved forward number:
-```
-
-It also contains:
-
-```text
-Forwarding enabled:
-```
-
-### 7.3 Remote configuration
-
-The service registers a listener against a database reference containing:
-
-```text
-number
-```
-
-The service also contains command-handling logic involving:
-
-```text
-STOP_FORWARDING
-CLEAR_FORWARD_NUMBER
-```
-
-Another code path writes a supplied `forward_number` value to the remote database.
-
-This establishes a remotely configurable forwarding-related service.
-
-### 7.4 Dynamic SMS receiver registration
-
-The service creates an intent filter for:
-
-```java
-android.provider.Telephony.SMS_RECEIVED
-```
-
-It sets the broadcast priority to:
-
-```java
-1000
-```
-
-It then registers a broadcast receiver dynamically.
-
-The service also contains cleanup logic to unregister that receiver.
-
-**Assessment:** A dynamically registered SMS receiver and remotely configurable forwarding-number mechanism are directly observed.
-
-However, the supplied disassembly excerpt does not establish the complete forwarding operation that transfers each received SMS to the configured destination number. That specific data path requires further method-level inspection.
-
-## 8. SMS Sent Receiver
-
-The `SmsSentReceiver` implementation contains a handoff to `SmsListenerService`.
-
-It supplies:
-
-```text
-type = outgoing
-```
-
-This is consistent with the separate outgoing SMS processing and upload method.
-
-The presence of this receiver supports the application's outgoing-message tracking architecture.
-
-It does not independently prove that every message sent through the device is captured.
-
-## 9. USSD Analysis
-
-The supplied search was performed against:
-
-```text
-targeted_sms_worker.txt
-priority_methods_full.txt
-```
-
-Search terms:
-
-```text
-sendUssdRequest
-USSD
-CALL_PHONE
-TelephonyManager
-```
-
-No matching output was returned.
-
-Therefore, the supplied evidence does not establish a USSD execution path.
-
-This is a limited negative result: it does not prove that no USSD functionality exists elsewhere in the recovered payload.
-
-## 10. Relevant Android Permissions
-
-The outer application permission inventory includes:
-
-| Permission | Relevance |
-|---|---|
-| `SEND_SMS` | Outgoing SMS transmission |
-| `RECEIVE_SMS` | Incoming SMS reception |
-| `READ_SMS` | SMS access |
-| `READ_PHONE_STATE` | Telephony-related device information |
-| `READ_PHONE_NUMBERS` | Phone-number-related information |
-| `INTERNET` | Network communication |
-
-Permission declarations indicate requested capabilities, not proof that Android granted them or that the application exercised them.
-
-## 11. Security Assessment
-
-| Finding | Evidence strength | Assessment |
-|---|---|---|
-| Outgoing SMS API calls | Direct DEX references | Confirmed code capability |
-| Multipart SMS transmission | `divideMessage()` and `sendMultipartTextMessage()` | Confirmed code capability |
-| SIM-specific SMS manager | Subscription manager and SMS manager calls | Confirmed code capability |
-| Incoming SMS broadcast handling | `SMS_RECEIVED` and PDU extraction | Confirmed code capability |
-| SMS content monitoring | `Telephony.Sms.CONTENT_URI` observer | Confirmed code capability |
-| Incoming SMS remote upload | `uploadIncomingSms` and database path | Confirmed code path |
-| Outgoing SMS remote upload | `uploadOutgoingSms` and database path | Confirmed code path |
-| Remote forwarding configuration | `forward_number` and database listener | Confirmed configuration mechanism |
-| Actual SMS forwarding to configured number | Complete message-to-destination path not established | Requires further analysis |
-| USSD execution | No matching output in supplied files | Not established |
-
-### Overall interpretation
-
-The recovered application contains a substantial SMS-processing subsystem.
-
-The combination of incoming SMS reception, SMS content observation, outgoing SMS transmission, device-specific remote SMS records and remotely configurable forwarding functionality raises significant privacy and security concerns.
-
-The most important finding is not simply that the application requests SMS permissions. It is that the recovered code implements multiple SMS processing and remote data-transfer paths.
-
-These capabilities warrant further investigation into the remote database, configuration controls and the exact forwarding implementation.
-
-## 12. Limitations
-
-This investigation is based on static DEX disassembly.
-
-The following have not been established:
-
-- Successful execution on a real Android device.
-- Successful SMS transmission through a mobile carrier.
-- Successful receipt of SMS messages by the application.
-- Successful Firebase upload of message contents.
-- The identity or ownership of the remote backend.
-- Actual SMS forwarding to the configured number.
-- Runtime permission grants.
-- The complete behaviour of every obfuscated method.
-
-Some application methods are obfuscated, and JADX output has previously shown decoding errors. Consequently, the DEX-level observations are preferred over unreliable reconstructed Java output.
-
-## 13. Conclusion
-
-Static analysis establishes that the recovered application implements outgoing SMS transmission, incoming SMS processing, SMS content-provider observation and separate incoming/outgoing SMS upload routines.
-
-A further service implements remote forwarding-number configuration and dynamically registers for incoming SMS broadcasts.
-
-These findings demonstrate potentially sensitive SMS collection and communication capabilities. Runtime analysis and complete forwarding-path inspection are necessary before making stronger claims about actual message exfiltration or forwarding.
+The static evidence establishes the intended upload implementation, not successful exfiltration or the actual contents of a live remote database.
 
 ---
 
-## Appendix A — Evidence Handling
+## 6. Outgoing SMS Status Monitoring
 
-Preserve the original disassembly and evidence files.
+### 6.1 Identified component
 
-Do not publish:
+`SmsSentReceiver`
 
-- Personal SMS contents.
-- Real phone numbers.
-- Device-specific identifiers.
-- Firebase credentials or private configuration values.
-- Access tokens or authentication material.
+The extracted `onReceive()` method retrieves:
 
-Keep any sensitive values redacted in the public repository.
+- `recipient`
+- `message`
+- `timestamp`
 
-## Appendix B — SMS Processing Architecture
+It then checks the broadcast result code and maps the result into status strings.
+
+Identified status values include:
+
+| Status | Meaning |
+|---|---|
+| `sent_success` | SMS transmission reported as successful by the callback |
+| `failed_no_service` | No service |
+| `failed_null_pdu` | Null PDU |
+| `failed_radio_off` | Radio unavailable |
+| `failed_generic` | Generic transmission failure |
+
+The receiver subsequently starts `SmsListenerService` with the outgoing message details and status.
+
+### 6.2 Assessment
+
+<badge color="success">Confirmed through static analysis</badge>
+
+The application contains a mechanism for tracking outgoing SMS transmission results.
+
+A successful callback does not independently establish delivery to the final recipient.
+
+---
+
+## 7. Remote SMS Forwarding Configuration
+
+### 7.1 Identified component
+
+`SmsNForward`
+
+The extracted service evidence identifies a separate mechanism for managing a forwarding number.
+
+The service references:
+
+- SharedPreferences named `SmsForwardPrefs`.
+- A preference key named `forward_number`.
+- Firebase Realtime Database.
+- A background `HandlerThread` named `SmsForwardThread`.
+- The Android device identifier.
+
+The service reads a previously saved forwarding number and maintains an enabled-state indicator based on whether a valid value is available.
+
+### 7.2 Identified commands
+
+The extracted command-handling evidence identifies the following actions:
+
+| Command | Observed operation |
+|---|---|
+| `CHECK_FORWARD_NUMBER` | Forwarding-number check operation |
+| `STOP_FORWARDING` | Stop-forwarding operation |
+| `UPDATE_FORWARD_NUMBER` | Updates the configured forwarding number |
+| `CLEAR_FORWARD_NUMBER` | Writes an empty value to the forwarding-number path |
+
+The update and clear operations reference:
+
+```text
+number/forward_number
+```
+
+The service also registers a receiver for:
+
+```text
+android.provider.Telephony.SMS_RECEIVED
+```
+
+The registration evidence identifies a receiver priority of 1000.
+
+### 7.3 Unresolved callback
+
+The dynamically registered receiver is referenced through the obfuscated class:
+
+```text
+e.w
+```
+
+JADX generated a Java stub for this class but failed to reconstruct its methods.
+
+The following methods could not be decoded:
+
+- `e.w.<init>()`
+- `e.w.a(String, String)`
+- `e.w.onReceive(Context, Intent)`
+
+The errors included invalid DEX instruction positions, such as:
+
+```text
+newPosition < 0
+newPosition > limit
+```
+
+The class was not recovered in either the available `inner_smali` or `worker_smali` output.
+
+Additionally, the `SmsNForward` service itself contains several method decoding failures.
+
+### 7.4 Forensic interpretation
+
+The available evidence establishes:
+
+1. A service responsible for managing a forwarding number.
+2. Remote configuration operations involving that number.
+3. Registration of an SMS_RECEIVED broadcast receiver.
+
+However, the receiver's callback could not be reconstructed.
+
+Therefore, the following behaviour has **not been established**:
+
+- Whether the receiver extracts incoming SMS message content.
+- Whether it uses the configured forwarding number as a destination.
+- Whether it invokes `SmsManager` to transmit received messages.
+- Whether any such forwarding succeeds at runtime.
+
+The presence of a forwarding-number configuration mechanism must not be treated as proof of actual SMS forwarding.
+
+---
+
+## 8. SMS-Related Android Permissions
+
+The recovered application metadata identifies the following SMS-related permissions:
+
+| Permission | Capability |
+|---|---|
+| `android.permission.RECEIVE_SMS` | Receive SMS broadcasts |
+| `android.permission.READ_SMS` | Read SMS data |
+| `android.permission.SEND_SMS` | Initiate SMS transmission |
+| `android.permission.RECEIVE_MMS` | Receive MMS-related broadcasts |
+| `android.permission.READ_PHONE_STATE` | Access certain telephony state |
+| `android.permission.READ_PHONE_NUMBERS` | Access available phone-number information |
+| `android.permission.CALL_PHONE` | Initiate phone calls |
+
+Permission declarations establish requested capabilities, not proof that the permissions were granted or exercised.
+
+---
+
+## 9. Consolidated Findings
+
+| ID | Finding | Evidence status |
+|---|---|---|
+| SMS-01 | Outgoing SMS transmission through `SmsManager` | Confirmed |
+| SMS-02 | Multipart SMS transmission | Confirmed |
+| SMS-03 | SIM-specific SMS manager selection | Confirmed |
+| SMS-04 | Incoming SMS receiver implementation references | Confirmed, callback partially unrecovered |
+| SMS-05 | SMS database monitoring using `ContentObserver` | Confirmed |
+| SMS-06 | Keyword-based SMS filtering | Confirmed |
+| SMS-07 | Incoming SMS Firebase upload routine | Confirmed |
+| SMS-08 | Outgoing SMS Firebase upload routine | Confirmed |
+| SMS-09 | Outgoing SMS status monitoring | Confirmed |
+| SMS-10 | Remote forwarding-number configuration | Confirmed |
+| SMS-11 | Actual forwarding of incoming SMS to configured number | Unverified |
+
+---
+
+## 10. Security Assessment
+
+The combined SMS-related functionality presents several security concerns.
+
+### 10.1 Potential exposure of sensitive messages
+
+The application contains logic for collecting incoming and outgoing SMS data and preparing it for remote upload.
+
+SMS messages can contain:
+
+- One-time passwords.
+- Banking notifications.
+- Transaction information.
+- Account recovery codes.
+- Personal communications.
+
+If these routines execute and the remote upload succeeds, sensitive information could be exposed to an external service.
+
+### 10.2 Remote communication and control
+
+The forwarding-number configuration mechanism indicates that the application supports remote configuration of a phone number through Firebase-related operations.
+
+This warrants further investigation into the application's backend communication and command-handling mechanisms.
+
+### 10.3 SMS transmission capability
+
+The outgoing SMS implementation can initiate messages using the Android SMS API.
+
+This capability could potentially be abused to transmit messages without the user's awareness if the application has the required permission and its sending routines are invoked.
+
+The actual runtime behaviour and authorization context remain outside the scope of this static analysis.
+
+### 10.4 Overall assessment
+
+The combination of SMS monitoring, message processing, remote upload routines, outgoing SMS transmission, and remote forwarding-number configuration represents a significant privacy and security concern.
+
+The investigation does not establish the exact operational purpose of every component or prove successful data exfiltration.
+
+---
+
+## 11. Technical Limitations
+
+The following limitations must remain part of the final research record:
+
+1. The analysis was based on recovered DEX, JADX output, Baksmali output, and extracted method evidence.
+2. Several methods in `SmsNForward` and the obfuscated receiver `e.w` could not be reconstructed.
+3. The decoding errors prevented a complete examination of the receiver callback.
+4. Actual forwarding of incoming SMS messages to the configured number remains unverified.
+5. Successful Firebase uploads were not independently confirmed.
+6. Successful SMS delivery to recipients was not independently confirmed.
+7. Runtime execution of the identified SMS functionality was not established by this analysis.
+
+These limitations do not invalidate the behaviours directly identified in the recovered code, but they restrict conclusions about runtime execution and the unresolved forwarding mechanism.
+
+---
+
+## 12. Final Conclusion
+
+Static analysis identified extensive SMS-related functionality in the application presenting itself as RBL Card Limit Increase.
+
+The recovered implementation includes incoming SMS processing, keyword filtering, SMS database monitoring, outgoing SMS transmission, multipart messaging, SIM-specific transmission handling, SMS status monitoring, and Firebase-based upload routines.
+
+A separate service manages a remotely configured forwarding number and registers an additional SMS receiver.
+
+However, due to DEX decoding failures affecting the obfuscated receiver `e.w`, the precise behaviour of that callback could not be established. Consequently, actual SMS forwarding to the configured number remains an unresolved finding.
+
+**Final assessment:** The application contains substantial SMS access, processing, transmission, and remote communication capabilities. These capabilities create a potential risk to user privacy and SMS confidentiality. Runtime behaviour and successful remote data transfer require separate validation.
+
+**SMS investigation status: CLOSED — static analysis completed with one explicitly documented unresolved behaviour.**
+
+---
+
+## 13. Evidence Preservation
+
+The following identifiers should be retained with the investigation:
+
+| Evidence item | Identifier |
+|---|---|
+| Recovered DEX | `inner_apk/classes.dex` |
+| DEX SHA-256 | `194a87a57ea06786ce036858934f3f7ae53d91c0f2a3e2a715aa9f0979e3c073` |
+| JADX receiver stub | `inner_jadx/sources/e/w.java` |
+| SMS service source | `inner_jadx/sources/com/nxtwave/berlinenxt/SmsNForward.java` |
+| SMS receiver source | `inner_jadx/sources/com/nxtwave/berlinenxt/SmsReceiver.java` |
+| SMS sent receiver source | `inner_jadx/sources/com/nxtwave/berlinenxt/SmsSentReceiver.java` |
+| Primary method evidence | `targeted_sms_worker.txt` |
+| Additional method evidence | `priority_methods_full.txt` |
+
+Original evidence and recovered artifacts should be retained unchanged. Any public release should exclude private device identifiers, credentials, sensitive backend configuration, and cryptographic secrets.
+
+---
+
+## 14. SMS Processing Architecture
+
+The following diagram represents the identified application-level processing paths. The forwarding branch is deliberately marked unresolved.
 
 ```mermaid
 flowchart TD
-    A[Android Device SMS Subsystem]
+    A[Android Device] --> B[Incoming SMS]
+    A --> C[Outgoing SMS]
 
-    A --> B[Incoming SMS Broadcast]
-    A --> C[SMS Content Provider]
-    D[Application SMS Sending Logic] --> E[SmsManager]
+    B --> D[SmsReceiver]
+    D --> E[SmsListenerService]
 
-    B --> F[SmsReceiver]
-    C --> G[SmsListenerService]
-    E --> H[SmsSentReceiver]
+    E --> F[Keyword Filtering]
+    E --> G[SMS ContentObserver]
+    E --> H[Incoming SMS Upload]
 
-    F --> G
-    H --> G
+    C --> I[SmsManager]
+    I --> J[SmsSentReceiver]
+    J --> K[Transmission Status]
+    K --> L[Outgoing SMS Upload]
 
-    G --> I[Message Classification]
-    G --> J[Incoming SMS Upload]
-    G --> K[Outgoing SMS Upload]
+    H --> M[Firebase Database]
+    L --> M
 
-    J --> L[Firebase-style Database]
-    K --> L
+    N[SmsNForward Service] --> O[Remote Forward Number]
+    O --> P[Firebase Configuration]
 
-    M[SmsNForward Service] --> N[Remote Forward Number Configuration]
-    M --> O[Dynamic SMS Receiver Registration]
-    O --> B
+    N --> Q[Dynamic SMS Receiver]
+    Q --> R[e.w Callback]
+    R -.-> S[Actual SMS Forwarding]
+    S -.-> T[Unverified Behaviour]
 ```
 
-**Diagram note:** This represents relationships established by static code references. It does not establish successful runtime execution or successful data transmission.
+**Report classification:** Static Android SMS behaviour analysis. No claim of confirmed runtime execution or successful remote exfiltration.
